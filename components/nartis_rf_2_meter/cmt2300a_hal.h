@@ -16,13 +16,16 @@
 #include <cstdint>
 #include <cstddef>
 #include "cmt2300a_defs.h"
+#include "radio_hal.h"
 
 #include "esphome/core/gpio.h"
 
 namespace esphome::nartis_rf_2_meter {
 
-class Cmt2300aHal {
+class Cmt2300aHal : public RadioHal {
  public:
+  const char *name() const override { return "CMT2300A"; }
+
   /// Set GPIO pins. Must be called before init().
   void set_pins(esphome::InternalGPIOPin *sdio, esphome::InternalGPIOPin *sclk,
                 esphome::InternalGPIOPin *csb, esphome::InternalGPIOPin *fcsb,
@@ -30,10 +33,10 @@ class Cmt2300aHal {
 
   /// RF channel in Hz; recomputes the frequency bank via AN199. Call before init(),
   /// which is what writes it. Defaults to 443.9 MHz.
-  void set_frequency(uint32_t freq_hz);
+  void set_frequency(uint32_t freq_hz) override;
 
   /// Soft reset, write the six register banks and the common post-config patches.
-  bool init();
+  bool init() override;
 
   /// Read the product ID (0x66 for CMT2300A) - a wiring sanity check.
   bool is_chip_connected();
@@ -41,18 +44,18 @@ class Cmt2300aHal {
   /// Transmit one d101-2 frame (98 f3 .. CRC). Applies the TX profile, pads,
   /// bit-reverses, fills the FIFO and blocks until TX_DONE or ~600 ms. Parks the
   /// chip in standby afterwards.
-  bool transmit(const uint8_t *frame, size_t len);
+  bool transmit(const uint8_t *frame, size_t len) override;
 
   /// Enter RX centred at rf_freq_hz_ + off_codes * 6.199 Hz.
-  bool begin_rx(int off_codes);
+  bool begin_rx(int off_codes) override;
 
   /// Drain full 15-byte chunks while the threshold line is asserted, up to
   /// buf_size / max_chunks. Returns bytes appended.
-  size_t drain_rx(uint8_t *buf, size_t buf_size, uint8_t max_chunks = 5);
+  size_t drain_rx(uint8_t *buf, size_t buf_size, uint8_t max_chunks = 5) override;
 
-  int8_t get_rssi_dbm();
+  int8_t get_rssi_dbm() override;
 
-  bool go_standby();
+  bool go_standby() override;
 
   static uint8_t reverse8(uint8_t b);
 

@@ -13,30 +13,33 @@ namespace esphome::nartis_rf_2_meter {
 static const char *const TAG = "nartis_rf_2_meter";
 
 void NartisRf2MeterComponent::setup() {
-  if (this->pin_sdio_ == nullptr || this->pin_sclk_ == nullptr || this->pin_csb_ == nullptr ||
-      this->pin_fcsb_ == nullptr || this->pin_gpio3_ == nullptr) {
-    ESP_LOGE(TAG, "CMT2300A pins are not configured");
-    this->publish_cycle_outcome_(false);
-    this->mark_failed();
-    return;
+  if (this->radio_ == nullptr) {
+    if (this->pin_sdio_ == nullptr || this->pin_sclk_ == nullptr || this->pin_csb_ == nullptr ||
+        this->pin_fcsb_ == nullptr || this->pin_gpio3_ == nullptr) {
+      ESP_LOGE(TAG, "CMT2300A pins are not configured");
+      this->publish_cycle_outcome_(false);
+      this->mark_failed();
+      return;
+    }
+    this->hal_.set_pins(this->pin_sdio_, this->pin_sclk_, this->pin_csb_, this->pin_fcsb_, this->pin_gpio3_);
+    this->radio_ = &this->hal_;
   }
 
   serial_to_bcd_le(this->address_, this->serial_le_);
   this->rf_frequency_hz_ =
       (this->frequency_override_ != 0) ? this->frequency_override_ : frequency_from_serial(this->address_);
 
-  this->hal_.set_pins(this->pin_sdio_, this->pin_sclk_, this->pin_csb_, this->pin_fcsb_, this->pin_gpio3_);
   // Must precede init(): init() is what writes the computed frequency bank.
-  this->hal_.set_frequency(this->rf_frequency_hz_);
+  this->radio_->set_frequency(this->rf_frequency_hz_);
 
-  if (!this->hal_.init()) {
-    ESP_LOGE(TAG, "CMT2300A initialization failed - check wiring");
+  if (!this->radio_->init()) {
+    ESP_LOGE(TAG, "%s initialization failed - check wiring", this->radio_->name());
     // Fail safe: a radio that never came up must not leave the entity unknown.
     this->publish_cycle_outcome_(false);
     this->mark_failed();
     return;
   }
-  this->hal_.go_standby();
+  this->radio_->go_standby();
   this->radio_ready_ = true;
 
   // The diagnostic entity reports on a poll cycle, so with no value entities
@@ -50,7 +53,17 @@ void NartisRf2MeterComponent::setup() {
     ESP_LOGW(TAG, "No sensors configured - nothing will be polled");
   }
 
-  ESP_LOGI(TAG, "CMT2300A ready at %.3f MHz (meter %s)", this->rf_frequency_hz_ / 1e6f, this->address_);
+  ESP_LOGI(TAG, "%s ready at %.3f MHz (meter %s)%s", this->radio_->name(), this->rf_frequency_hz_ / 1e6f,
+           this->address_, this->listen_only_ ? " - LISTEN-ONLY, nothing will be transmitted" : "");
+  if (this->listen_only_) {
+    this->reset_cycle_state_();
+    this->radio_->begin_rx(this->rx_center_offset_);
+    this->rx_len_ = 0;
+    this->listen_armed_ms_ = millis();
+    this->rx_last_chunk_ms_ = this->listen_armed_ms_;
+    this->set_state_(State::STATE_LISTEN);
+    return;
+  }
   this->set_state_(State::STATE_IDLE);
 }
 
@@ -283,8 +296,18 @@ void NartisRf2MeterComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Frequency: %.3f MHz%s", this->rf_frequency_hz_ / 1e6f,
                 (this->frequency_override_ != 0) ? LOG_STR_LITERAL(" (override)")
                                                  : LOG_STR_LITERAL(" (derived from address)"));
-  ESP_LOGCONFIG(TAG, "  RX centre offset: %d codes (~%.1f kHz)", this->rx_center_offset_,
-                this->rx_center_offset_ * RX_CODE_HZ / 1000.0f);
+  if (this->radio_ == &this->hal_) {
+    ESP_LOGCONFIG(TAG, "  Radio: CMT2300A");
+    ESP_LOGCONFIG(TAG, "  RX centre offset: %d codes (~%.1f kHz)", this->rx_center_offset_,
+                  this->rx_center_offset_ * RX_CODE_HZ / 1000.0f);
+  } else if (this->radio_ != nullptr) {
+    this->radio_->dump_config();
+  }
+  if (this->listen_only_) {
+    ESP_LOGCONFIG(TAG, "  Mode: LISTEN-ONLY (no transmissions; decodes replies to the Д101-2 display)");
+    ESP_LOGCONFIG(TAG, "  Heard so far: %" PRIu32 " meter repl(ies), %" PRIu32 " display request(s)",
+                  this->listen_frames_, this->listen_requests_heard_);
+  }
   ESP_LOGCONFIG(TAG, "  RX timeout: %" PRIu32 " ms, retries: %u, request gap: %" PRIu32 " ms", this->rf_rx_timeout_ms_,
                 this->rf_retries_, this->request_gap_ms_);
   ESP_LOGCONFIG(TAG, "  Sources: list 1 %s, list 2 %s, fixed DI 0xF101 %s, fixed DI 0xF102 %s",
@@ -296,11 +319,13 @@ void NartisRf2MeterComponent::dump_config() {
   ESP_LOGCONFIG(TAG, "  Values are published scaled to the unit in tags.md - no multiply filter needed");
   LOG_BINARY_SENSOR("  ", "Last read OK", this->last_read_ok_bs_);  // macro is nullptr-safe
   LOG_SENSOR("  ", "RSSI", this->rssi_sensor_);
-  LOG_PIN("  SDIO pin: ", this->pin_sdio_);
-  LOG_PIN("  SCLK pin: ", this->pin_sclk_);
-  LOG_PIN("  CSB pin: ", this->pin_csb_);
-  LOG_PIN("  FCSB pin: ", this->pin_fcsb_);
-  LOG_PIN("  GPIO3 pin: ", this->pin_gpio3_);
+  if (this->radio_ == &this->hal_) {
+    LOG_PIN("  SDIO pin: ", this->pin_sdio_);
+    LOG_PIN("  SCLK pin: ", this->pin_sclk_);
+    LOG_PIN("  CSB pin: ", this->pin_csb_);
+    LOG_PIN("  FCSB pin: ", this->pin_fcsb_);
+    LOG_PIN("  GPIO3 pin: ", this->pin_gpio3_);
+  }
   LOG_UPDATE_INTERVAL(this);
 
   // Print the frames we will actually put on the air, to compare against a capture.
@@ -390,6 +415,19 @@ void NartisRf2MeterComponent::update() {
   if (!this->radio_ready_) {
     return;
   }
+  if (this->listen_only_) {
+    // Publishing is driven by what the display happened to ask for since last time.
+    if (!this->listen_dirty_) {
+      ESP_LOGD(TAG, "Listen-only: no meter reply heard since the last update (%" PRIu32 " repl(ies), %" PRIu32
+                    " display request(s) so far)",
+               this->listen_frames_, this->listen_requests_heard_);
+      return;
+    }
+    this->handle_publish_();
+    this->reset_cycle_state_();
+    this->listen_dirty_ = false;
+    return;
+  }
   if (this->state_ != State::STATE_IDLE) {
     ESP_LOGW(TAG, "Previous cycle still running (%s) - skipping this update",
              LOG_STR_ARG(state_to_string_(this->state_)));
@@ -398,7 +436,7 @@ void NartisRf2MeterComponent::update() {
   this->start_cycle_();
 }
 
-void NartisRf2MeterComponent::start_cycle_() {
+void NartisRf2MeterComponent::reset_cycle_state_() {
   this->cycles_++;
   this->cycle_start_ms_ = App.get_loop_component_start_time();
   for (ParsedItem &item : this->merged_) {
@@ -416,6 +454,10 @@ void NartisRf2MeterComponent::start_cycle_() {
 
   this->f101_ok_ = false;
   this->f102_len_ = 0;
+}
+
+void NartisRf2MeterComponent::start_cycle_() {
+  this->reset_cycle_state_();
 
   // Walk LIST_REQUESTS in order: a status half must follow its own records half
   // back to back, or the cursor holding the leftover records is already gone.
@@ -498,9 +540,13 @@ void NartisRf2MeterComponent::loop() {
       this->set_state_(State::STATE_IDLE);
       break;
 
+    case State::STATE_LISTEN:
+      this->handle_listen_();
+      break;
+
     default:
       ESP_LOGE(TAG, "Unhandled state %u - returning to idle", static_cast<unsigned>(this->state_));
-      this->hal_.go_standby();
+      this->radio_->go_standby();
       this->set_state_(State::STATE_IDLE);
       break;
   }
@@ -533,11 +579,11 @@ bool NartisRf2MeterComponent::send_request_() {
 
   // transmit() is synchronous: it applies the TX profile, fills the FIFO and blocks
   // until TX_DONE - tens of milliseconds for a 28-byte frame at 1.2 kbps.
-  if (!this->hal_.transmit(this->tx_buf_.data(), this->tx_len_)) {
+  if (!this->radio_->transmit(this->tx_buf_.data(), this->tx_len_)) {
     ESP_LOGW(TAG, "DI 0x%04X: transmit did not complete", di);
     return false;
   }
-  if (!this->hal_.begin_rx(this->rx_center_offset_)) {
+  if (!this->radio_->begin_rx(this->rx_center_offset_)) {
     ESP_LOGW(TAG, "DI 0x%04X: could not enter RX", di);
     return false;
   }
@@ -551,7 +597,7 @@ NartisRf2MeterComponent::RxPoll NartisRf2MeterComponent::poll_rx_() {
   const uint32_t now = App.get_loop_component_start_time();
 
   // drain_rx() only ever appends whole FIFO_TH_VALUE chunks that fit.
-  const size_t got = this->hal_.drain_rx(this->rx_buf_.data() + this->rx_len_, this->rx_buf_.size() - this->rx_len_);
+  const size_t got = this->radio_->drain_rx(this->rx_buf_.data() + this->rx_len_, this->rx_buf_.size() - this->rx_len_);
   if (got > 0) {
     this->rx_len_ += got;
     this->rx_last_chunk_ms_ = now;
@@ -581,7 +627,7 @@ void NartisRf2MeterComponent::handle_wait_() {
 
   if (this->poll_rx_() == RxPoll::RX_POLL_COMPLETE) {
     // Read RSSI while still in RX - go_standby() would invalidate it.
-    this->last_rssi_dbm_ = this->hal_.get_rssi_dbm();
+    this->last_rssi_dbm_ = this->radio_->get_rssi_dbm();
     this->rssi_valid_ = true;
 
     // The bytes go out whether or not they decode - they are the primary record for
@@ -662,7 +708,7 @@ void NartisRf2MeterComponent::handle_wait_() {
 
 void NartisRf2MeterComponent::retry_or_finish_() {
   const uint16_t di = this->current_di_();
-  this->hal_.go_standby();
+  this->radio_->go_standby();
 
   if (this->attempt_ <= this->rf_retries_) {
     this->retry_count_++;
@@ -677,7 +723,7 @@ void NartisRf2MeterComponent::retry_or_finish_() {
 }
 
 void NartisRf2MeterComponent::finish_exchange_() {
-  this->hal_.go_standby();
+  this->radio_->go_standby();
   this->rx_len_ = 0;
 
   // Every step in the list is sent; nothing is conditional on what an earlier reply
@@ -688,6 +734,75 @@ void NartisRf2MeterComponent::finish_exchange_() {
     return;
   }
   this->set_state_(State::STATE_PUBLISH);
+}
+
+/* listen_only: the receiver stays open and every frame it catches goes through the
+ * same parser. Replies are recognised by their DI, so they land exactly where a
+ * reply to our own request would; the display's requests (control 0x01) parse as
+ * NOT_RESPONSE and only feed a counter. Nothing here can transmit.
+ */
+void NartisRf2MeterComponent::handle_listen_() {
+  const uint32_t now = App.get_loop_component_start_time();
+  const RxPoll poll = this->poll_rx_();
+  if (poll == RxPoll::RX_POLL_COMPLETE) {
+    this->last_rssi_dbm_ = this->radio_->get_rssi_dbm();
+    this->rssi_valid_ = true;
+    ESP_LOGD(TAG, "Listen: RX rssi=%d dBm (%zu bytes)", this->last_rssi_dbm_, this->rx_len_);
+    ESP_LOGV(TAG, "  RX frame: %s", format_hex_pretty(this->rx_buf_.data(), this->rx_len_).c_str());
+    ParsedResponse resp{};
+    const ParseResult r = parse_response(this->rx_buf_.data(), this->rx_len_, this->serial_le_, &resp,
+                                         this->tag_width_);
+    this->handle_listen_frame_(r, resp);
+  } else if (poll == RxPoll::RX_POLL_BUSY || now - this->listen_armed_ms_ < LISTEN_REARM_MS) {
+    return;
+  }
+  this->rx_len_ = 0;
+  this->radio_->begin_rx(this->rx_center_offset_);
+  this->listen_armed_ms_ = now;
+  this->rx_last_chunk_ms_ = now;
+}
+
+void NartisRf2MeterComponent::handle_listen_frame_(ParseResult r, const ParsedResponse &resp) {
+  switch (r) {
+    case ParseResult::PARSE_RESULT_OK: {
+      this->listen_frames_++;
+      const uint8_t li = list_request_index(resp.di);
+      const uint8_t fi = fixed_request_index(resp.di);
+      if (li < LIST_REQUEST_COUNT) {
+        ESP_LOGI(TAG, "Listen: meter reply DI 0x%04X, %u record(s)", resp.di, resp.count);
+        this->log_response_(resp);
+        const uint8_t bit = static_cast<uint8_t>(1u << li);
+        this->requests_seen_ |= bit;
+        this->answered_ |= bit;
+        this->handle_list_reply_(li, resp);
+        this->listen_dirty_ = true;
+      } else if (fi < FIXED_REQUEST_COUNT) {
+        ESP_LOGI(TAG, "Listen: meter reply DI 0x%04X (fixed block)", resp.di);
+        this->fixed_seen_ |= static_cast<uint8_t>(1u << fi);
+        this->handle_fixed_reply_(fi, resp);
+        this->listen_dirty_ = true;
+      } else {
+        ESP_LOGI(TAG, "Listen: meter reply to DI 0x%04X, which this component does not poll", resp.di);
+        this->log_response_(resp);
+      }
+      return;
+    }
+    case ParseResult::PARSE_RESULT_NOT_RESPONSE:
+      this->listen_requests_heard_++;
+      ESP_LOGI(TAG, "Listen: heard a request from the Д101-2 display (%" PRIu32 " so far)",
+               this->listen_requests_heard_);
+      return;
+    case ParseResult::PARSE_RESULT_ERROR_RESPONSE:
+      ESP_LOGI(TAG, "Listen: the meter refused a display request (control 0x%02X)", resp.control);
+      return;
+    case ParseResult::PARSE_RESULT_UNKNOWN_TAG:
+      this->log_unknown_tag_(resp.di, resp);
+      return;
+    default:
+      this->bad_frame_count_++;
+      ESP_LOGD(TAG, "Listen: frame not usable: %s", parse_result_to_string(r));
+      return;
+  }
 }
 
 void NartisRf2MeterComponent::handle_publish_() {
@@ -1108,6 +1223,8 @@ const LogString *NartisRf2MeterComponent::state_to_string_(State state) {
       return LOG_STR("GAP");
     case State::STATE_PUBLISH:
       return LOG_STR("PUBLISH");
+    case State::STATE_LISTEN:
+      return LOG_STR("LISTEN");
     default:
       return LOG_STR("UNKNOWN");
   }

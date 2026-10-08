@@ -39,3 +39,7 @@ tools/frame_check/f1xx_check
 
 # Semgrep plugin scratch output
 .semgrep/
+
+# Si4432 work
+tools/frame_check/si4432_check
+tools/si4432_diag/.pio/

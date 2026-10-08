@@ -13,16 +13,21 @@
 #   f1xx_check  - the fixed blocks DI 0xF101 and DI 0xF102: length as the only
 #                 identification of the layout, and the map from their positional
 #                 fields onto TAGs
+#   si4432_check - Si4432 RX modem maths against the datasheet's Table 16, and the
+#                 TX bit stream against the CMT2300A one, bit for bit
 COMP := ../../components/nartis_rf_2_meter
 CXX ?= g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -I$(COMP)
 DEPS := $(COMP)/d101_frame.cpp $(COMP)/d101_frame.h
-CHECKS := frame_check f202_check f1xx_check
+CHECKS := frame_check f202_check f1xx_check si4432_check
 
 all: $(CHECKS)
 
-$(CHECKS): %: %.cpp $(DEPS)
+frame_check f202_check f1xx_check: %: %.cpp $(DEPS)
 	$(CXX) $(CXXFLAGS) -o $@ $< $(COMP)/d101_frame.cpp
+
+si4432_check: si4432_check.cpp $(DEPS) $(COMP)/si4432_modem.cpp $(COMP)/si4432_modem.h $(COMP)/si4432_defs.h
+	$(CXX) $(CXXFLAGS) -o $@ $< $(COMP)/d101_frame.cpp $(COMP)/si4432_modem.cpp
 
 .PHONY: all check clean
 check: $(CHECKS)

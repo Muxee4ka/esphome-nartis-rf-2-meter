@@ -4,7 +4,8 @@
  * Emulates the НАРТИС-Д101-2 display: constant DL/T 645 read requests over the
  * 443 MHz CMT2300A link. See d101_frame.h for the wire format and the sources.
  *
- *   Cmt2300aHal   - radio (bit-bang SPI, register banks, TX/RX profiles)
+ *   RadioHal      - radio seam (radio_hal.h): Cmt2300aHal (bit-bang SPI) or
+ *                   Si4432Hal (hardware SPI), selected in YAML
  *   d101_frame.*  - envelope + DL/T 645 + item payload, pure protocol
  *   this file     - polling state machine and entity publishing
  *
@@ -31,6 +32,7 @@
 #include "esphome/core/log.h"
 
 #include "cmt2300a_hal.h"
+#include "radio_hal.h"
 #include "d101_frame.h"
 
 #include <array>
@@ -77,6 +79,12 @@ class NartisRf2MeterComponent : public esphome::PollingComponent {
   void set_pin_fcsb(esphome::InternalGPIOPin *p) { this->pin_fcsb_ = p; }
   void set_pin_gpio3(esphome::InternalGPIOPin *p) { this->pin_gpio3_ = p; }
 
+  /// Use another radio instead of the built-in CMT2300A (the CMT pins are then unused).
+  void set_radio(RadioHal *radio) { this->radio_ = radio; }
+  /// Never transmit: keep the receiver open and decode whatever replies the meter
+  /// sends to the real Д101-2 display, publishing on each update().
+  void set_listen_only(bool v) { this->listen_only_ = v; }
+
   /// 12-digit nameplate serial: the DL/T 645 address, and it selects the channel.
   /// Code generation passes a string literal, which outlives the component.
   void set_address(const char *address) { this->address_ = address; }
@@ -120,6 +128,7 @@ class NartisRf2MeterComponent : public esphome::PollingComponent {
     STATE_WAIT_REPLY,  // drain RX, parse, retry or advance
     STATE_GAP,         // pause between exchanges
     STATE_PUBLISH,
+    STATE_LISTEN,  // listen_only: receiver open, no transmissions
   };
 
  protected:
@@ -132,7 +141,10 @@ class NartisRf2MeterComponent : public esphome::PollingComponent {
   void set_state_(State state);
   static const LogString *state_to_string_(State state);
 
+  void reset_cycle_state_();
   void start_cycle_();
+  void handle_listen_();
+  void handle_listen_frame_(ParseResult r, const ParsedResponse &resp);
   bool send_request_();
   RxPoll poll_rx_();
   void handle_wait_();
@@ -170,6 +182,17 @@ class NartisRf2MeterComponent : public esphome::PollingComponent {
   void publish_from_status_(const SensorEntry &e);
 
   Cmt2300aHal hal_;
+  /// The radio in use: &hal_ unless set_radio() supplied another.
+  RadioHal *radio_{nullptr};
+
+  bool listen_only_{false};
+  /// listen_only: a valid reply arrived since the last publish.
+  bool listen_dirty_{false};
+  uint32_t listen_frames_{0};
+  uint32_t listen_requests_heard_{0};
+  uint32_t listen_armed_ms_{0};
+  /// Re-open RX this often even if nothing arrived (recovers a wedged receiver).
+  static constexpr uint32_t LISTEN_REARM_MS = 60000;
 
   esphome::binary_sensor::BinarySensor *last_read_ok_bs_{nullptr};
   esphome::sensor::Sensor *rssi_sensor_{nullptr};

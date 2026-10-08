@@ -1,7 +1,7 @@
 """Nartis RF-2 meter - ESPHome external component.
 
 Reads Nartis И100/И300/И500 meters (2024+, the "RF-433-2" / Д101-2 protocol) over
-a CMT2300A 443 MHz radio by emulating the НАРТИС-Д101-2 display. DL/T 645-1997
+a CMT2300A or Si4432 443 MHz radio by emulating the НАРТИС-Д101-2 display. DL/T 645-1997
 inside a radio envelope: no encryption, no session, no password.
 
 The meter answers six constant requests, one per `sources:` entry (default
@@ -24,6 +24,7 @@ unit, published raw.
 
 from esphome import pins
 import esphome.codegen as cg
+from esphome.components import spi
 
 # The dotted form on purpose: this package has its own sensor.py, and a plain
 # `from esphome.components import sensor` resolves to that one instead.
@@ -33,6 +34,7 @@ from esphome.const import (
     CONF_ADDRESS,
     CONF_FREQUENCY,
     CONF_ID,
+    CONF_TX_POWER,
     DEVICE_CLASS_SIGNAL_STRENGTH,
     ENTITY_CATEGORY_DIAGNOSTIC,
     STATE_CLASS_MEASUREMENT,
@@ -56,6 +58,17 @@ CONF_REQUEST_GAP = "request_gap"
 CONF_RF_RX_TIMEOUT = "rf_rx_timeout"
 CONF_RF_RETRIES = "rf_retries"
 CONF_RX_CENTER_OFFSET = "rx_center_offset"
+CONF_LISTEN_ONLY = "listen_only"
+
+CONF_SI4432 = "si4432"
+CONF_NIRQ_PIN = "nirq_pin"
+CONF_SDN_PIN = "sdn_pin"
+CONF_FREQUENCY_CORRECTION = "frequency_correction"
+CONF_RX_OFFSET = "rx_offset"
+CONF_RX_DEVIATION = "rx_deviation"
+CONF_RX_BANDWIDTH = "rx_bandwidth"
+CONF_ANTENNA_SWITCH = "antenna_switch"
+CONF_CRYSTAL_LOAD = "crystal_load"
 
 CONF_SOURCES = "sources"
 CONF_RSSI = "rssi"
@@ -74,6 +87,90 @@ NartisRf2MeterComponent = nartis_rf_2_meter_ns.class_(
     "NartisRf2MeterComponent", cg.PollingComponent
 )
 StatusField = nartis_rf_2_meter_ns.enum("StatusField", is_class=True)
+Si4432Hal = nartis_rf_2_meter_ns.class_("Si4432Hal")
+Si4432AntennaSwitch = nartis_rf_2_meter_ns.enum("Si4432AntennaSwitch", is_class=True)
+
+ANTENNA_SWITCH = {
+    "gpio0_tx": Si4432AntennaSwitch.ANTENNA_SWITCH_GPIO0_TX,
+    "gpio0_rx": Si4432AntennaSwitch.ANTENNA_SWITCH_GPIO0_RX,
+    "none": Si4432AntennaSwitch.ANTENNA_SWITCH_NONE,
+}
+# Si4432 txpow codes 0..7.
+SI4432_TX_POWER_DBM = [1, 2, 5, 8, 11, 14, 17, 20]
+
+
+def validate_si4432_tx_power(value):
+    value = cv.int_(cv.string(value).lower().removesuffix("dbm").strip())
+    if value not in SI4432_TX_POWER_DBM:
+        raise cv.Invalid(
+            f"tx_power must be one of {SI4432_TX_POWER_DBM} dBm (Si4432 steps); got {value}"
+        )
+    return value
+
+
+def signed_frequency(value):
+    """A frequency that may be negative, e.g. "-3.2kHz"."""
+    s = cv.string(value).strip()
+    if s.startswith("-"):
+        return -cv.frequency(s[1:])
+    return cv.frequency(s.lstrip("+"))
+
+
+# The Д101-2 is specified at up to 10 mW; +8 dBm is the closest Si4432 step below.
+SI4432_SCHEMA = cv.Schema(
+    {
+        cv.GenerateID(): cv.declare_id(Si4432Hal),
+        cv.Required(CONF_NIRQ_PIN): pins.internal_gpio_input_pin_schema,
+        cv.Optional(CONF_SDN_PIN): pins.gpio_output_pin_schema,
+        cv.Optional(CONF_TX_POWER, default=8): validate_si4432_tx_power,
+        # Crystal error of this module, added to every carrier it programs.
+        cv.Optional(CONF_FREQUENCY_CORRECTION, default="0Hz"): cv.All(
+            signed_frequency, cv.Range(min=-50000, max=50000)
+        ),
+        # The meter answers ~4.7 kHz above the display's carrier (the CMT path's
+        # rx_center_offset 758 x 6.199 Hz).
+        cv.Optional(CONF_RX_OFFSET, default="4699Hz"): cv.All(
+            signed_frequency, cv.Range(min=-30000, max=30000)
+        ),
+        cv.Optional(CONF_RX_DEVIATION, default="25kHz"): cv.All(
+            cv.frequency, cv.Range(min=1000, max=60000)
+        ),
+        # 37.7 .. 69.2 kHz at 1.2 kbps; the next wider datasheet filter is used.
+        cv.Optional(CONF_RX_BANDWIDTH, default="64kHz"): cv.All(
+            cv.frequency, cv.Range(min=10000, max=69200)
+        ),
+        cv.Optional(CONF_ANTENNA_SWITCH, default="gpio0_tx"): cv.enum(
+            ANTENNA_SWITCH, lower=True
+        ),
+        cv.Optional(CONF_CRYSTAL_LOAD): cv.int_range(min=0, max=127),
+    }
+).extend(spi.spi_device_schema(cs_pin_required=True))
+
+
+def validate_radio(config: ConfigType) -> ConfigType:
+    cmt = [
+        k
+        for k in (
+            CONF_PIN_SDIO,
+            CONF_PIN_SCLK,
+            CONF_PIN_CSB,
+            CONF_PIN_FCSB,
+            CONF_PIN_GPIO3,
+        )
+        if k in config
+    ]
+    if CONF_SI4432 in config:
+        if cmt:
+            raise cv.Invalid(
+                f"`si4432:` and the CMT2300A pins ({', '.join(cmt)}) are mutually exclusive"
+            )
+        return config
+    if len(cmt) != 5:
+        raise cv.Invalid(
+            "configure either a `si4432:` block or all five CMT2300A pins "
+            "(pin_sdio, pin_sclk, pin_csb, pin_fcsb, pin_gpio3)"
+        )
+    return config
 
 # UNCONFIRMED: inferred from byte positions in one capture, where the firmware layout
 # calls the same bytes device state. Real temperature is `tag: 0x2A`.
@@ -195,11 +292,14 @@ def validate_address(value) -> str:
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(NartisRf2MeterComponent),
-        cv.Required(CONF_PIN_SDIO): pins.internal_gpio_output_pin_schema,
-        cv.Required(CONF_PIN_SCLK): pins.internal_gpio_output_pin_schema,
-        cv.Required(CONF_PIN_CSB): pins.internal_gpio_output_pin_schema,
-        cv.Required(CONF_PIN_FCSB): pins.internal_gpio_output_pin_schema,
-        cv.Required(CONF_PIN_GPIO3): pins.internal_gpio_input_pin_schema,
+        cv.Optional(CONF_PIN_SDIO): pins.internal_gpio_output_pin_schema,
+        cv.Optional(CONF_PIN_SCLK): pins.internal_gpio_output_pin_schema,
+        cv.Optional(CONF_PIN_CSB): pins.internal_gpio_output_pin_schema,
+        cv.Optional(CONF_PIN_FCSB): pins.internal_gpio_output_pin_schema,
+        cv.Optional(CONF_PIN_GPIO3): pins.internal_gpio_input_pin_schema,
+        cv.Optional(CONF_SI4432): SI4432_SCHEMA,
+        # Never transmit; decode the replies the meter sends to the real display.
+        cv.Optional(CONF_LISTEN_ONLY, default=False): cv.boolean,
         cv.Required(CONF_ADDRESS): validate_address,
         cv.Optional(CONF_FREQUENCY): cv.All(
             cv.frequency, cv.Range(min=430000000, max=460000000)
@@ -232,6 +332,7 @@ CONFIG_SCHEMA = cv.Schema(
         ),
     }
 ).extend(cv.polling_component_schema("300s"))
+CONFIG_SCHEMA = cv.All(CONFIG_SCHEMA, validate_radio)
 
 
 async def to_code(config):
@@ -245,8 +346,26 @@ async def to_code(config):
         (CONF_PIN_FCSB, var.set_pin_fcsb),
         (CONF_PIN_GPIO3, var.set_pin_gpio3),
     ):
-        pin = await cg.gpio_pin_expression(config[key])
-        cg.add(setter(pin))
+        if key in config:
+            pin = await cg.gpio_pin_expression(config[key])
+            cg.add(setter(pin))
+
+    if (si := config.get(CONF_SI4432)) is not None:
+        radio = cg.new_Pvariable(si[CONF_ID])
+        await spi.register_spi_device(radio, si)
+        cg.add(radio.set_nirq_pin(await cg.gpio_pin_expression(si[CONF_NIRQ_PIN])))
+        if CONF_SDN_PIN in si:
+            cg.add(radio.set_sdn_pin(await cg.gpio_pin_expression(si[CONF_SDN_PIN])))
+        cg.add(radio.set_tx_power_code(SI4432_TX_POWER_DBM.index(si[CONF_TX_POWER])))
+        cg.add(radio.set_frequency_correction_hz(int(si[CONF_FREQUENCY_CORRECTION])))
+        cg.add(radio.set_rx_offset_hz(int(si[CONF_RX_OFFSET])))
+        cg.add(radio.set_rx_deviation_hz(int(si[CONF_RX_DEVIATION])))
+        cg.add(radio.set_rx_bandwidth_hz(int(si[CONF_RX_BANDWIDTH])))
+        cg.add(radio.set_antenna_switch(si[CONF_ANTENNA_SWITCH]))
+        if CONF_CRYSTAL_LOAD in si:
+            cg.add(radio.set_xtal_load(si[CONF_CRYSTAL_LOAD]))
+        cg.add(var.set_radio(radio))
+    cg.add(var.set_listen_only(config[CONF_LISTEN_ONLY]))
 
     cg.add(var.set_address(config[CONF_ADDRESS]))
     if (frequency := config.get(CONF_FREQUENCY)) is not None:

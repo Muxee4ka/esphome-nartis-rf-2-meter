@@ -1,0 +1,148 @@
+# ESP32 DevKit V1 + Si4432 (XL4432-SMT / RFM22B-class module).
+#
+# Wiring used here:
+#   Si4432  VDD  GND  SCLK    SDI     SDO     NSEL   NIRQ    SDN
+#   ESP32   3V3  GND  GPIO18  GPIO23  GPIO19  GPIO5  GPIO27  GPIO26
+#
+# Everything personal is in secrets.yaml (see secrets.yaml.example).
+#
+# Start with `listen_only: true`: nothing is transmitted, and the component decodes
+# the replies your meter sends to the real Д101-2 display whenever it polls. Switch
+# to `false` only after that works - see SI4432.md.
+
+esphome:
+  name: nartis-meter
+  friendly_name: Nartis Meter
+
+esp32:
+  board: esp32doit-devkit-v1
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+  tx_buffer_size: 1024
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # If the Wi-Fi is gone, the device opens its own AP for reconfiguration.
+  ap:
+    ssid: "Nartis-Meter-Fallback"
+    password: !secret fallback_ap_password
+
+captive_portal:
+
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [nartis_rf_2_meter]
+  # Or, once the branch is pushed:
+  # - source: github://<you>/esphome-nartis-rf-2-meter@si4432-support
+  #   components: [nartis_rf_2_meter]
+
+spi:
+  clk_pin: GPIO18
+  mosi_pin: GPIO23
+  miso_pin: GPIO19
+
+nartis_rf_2_meter:
+  id: nartis
+  address: !secret nartis_serial   # 12 digits from the nameplate; also selects the channel
+  si4432:
+    cs_pin: GPIO5
+    nirq_pin:
+      number: GPIO27
+      mode:
+        input: true
+        pullup: true
+    sdn_pin: GPIO26
+    # tx_power: 8                  # dBm, one of 1 2 5 8 11 14 17 20. The Д101-2 is <= 10 mW
+    # frequency_correction: 0Hz    # this module's crystal error, see SI4432.md
+    # rx_offset: 4699Hz            # reply sits this far above the display's carrier
+    # rx_deviation: 25kHz
+    # rx_bandwidth: 64kHz          # 37.7 .. 69.2 kHz
+    # antenna_switch: gpio0_tx     # gpio0_tx | gpio0_rx | none
+  listen_only: true
+  update_interval: 60s
+  sources: [list_2]
+  rssi:
+    name: "Meter RSSI"
+
+# Entities below are values the protocol carries. Which of them your meter actually
+# sends depends on its indication lists: check the log (TAG lines) after the first
+# reply and delete what never arrives. Three-phase meters use 0x15-0x17 / 0x1C-0x1E
+# instead of 0x14 / 0x1B.
+sensor:
+  - platform: nartis_rf_2_meter
+    name: "Energy import total"
+    tag: 0x00
+    unit_of_measurement: kWh
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+  - platform: nartis_rf_2_meter
+    name: "Energy import T1"
+    tag: 0x01
+    unit_of_measurement: kWh
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+  - platform: nartis_rf_2_meter
+    name: "Energy import T2"
+    tag: 0x02
+    unit_of_measurement: kWh
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+  - platform: nartis_rf_2_meter
+    name: "Active power"
+    tag: 0x20
+    unit_of_measurement: W
+    accuracy_decimals: 1
+    device_class: power
+    state_class: measurement
+  - platform: nartis_rf_2_meter
+    name: "Voltage"
+    tag: 0x14
+    unit_of_measurement: V
+    accuracy_decimals: 1
+    device_class: voltage
+    state_class: measurement
+  - platform: nartis_rf_2_meter
+    name: "Current"
+    tag: 0x1B
+    unit_of_measurement: A
+    accuracy_decimals: 2
+    device_class: current
+    state_class: measurement
+  - platform: nartis_rf_2_meter
+    name: "Mains frequency"
+    tag: 0x28
+    unit_of_measurement: Hz
+    accuracy_decimals: 2
+    device_class: frequency
+    state_class: measurement
+  - platform: wifi_signal
+    name: "WiFi signal"
+    update_interval: 60s
+    entity_category: diagnostic
+
+text_sensor:
+  - platform: nartis_rf_2_meter
+    name: "Meter clock"
+    tag: 0x29
+    entity_category: diagnostic
+
+binary_sensor:
+  - platform: nartis_rf_2_meter
+    name: "Last read OK"
