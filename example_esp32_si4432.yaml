@@ -46,8 +46,8 @@ external_components:
       type: local
       path: components
     components: [nartis_rf_2_meter]
-  # Or, once the branch is pushed:
-  # - source: github://<you>/esphome-nartis-rf-2-meter@si4432-support
+  # Or straight from GitHub:
+  # - source: github://Muxee4ka/esphome-nartis-rf-2-meter@si4432-support
   #   components: [nartis_rf_2_meter]
 
 spi:
