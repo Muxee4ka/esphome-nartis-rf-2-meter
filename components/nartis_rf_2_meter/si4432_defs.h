@@ -68,6 +68,7 @@ static constexpr uint8_t DEVICE_TYPE_TRX = 0x08;
 
 /* 0x02 device status */
 static constexpr uint8_t STATUS_FFOVFL = 0x80;
+static constexpr uint8_t STATUS_FFUNFL = 0x40;
 static constexpr uint8_t STATUS_RXFFEM = 0x20;
 static constexpr uint8_t STATUS_FREQERR = 0x08;
 
@@ -105,6 +106,9 @@ static constexpr uint8_t MOD1_TXDTRTSCALE = 0x20;
 static constexpr uint8_t MOD2_FIFO_GFSK = 0x23;
 
 static constexpr size_t FIFO_SIZE = 64;
+/// RX almost-full threshold (0x7E): this many bytes are known to be in the FIFO
+/// when rxffafull is set, so they can be read in one burst.
+static constexpr uint8_t RX_AFULL_THRESHOLD = 48;
 static constexpr uint32_t XTAL_HZ = 30000000u;
 
 /* d101-2 link, from the CMT2300A profile this component was proven with:

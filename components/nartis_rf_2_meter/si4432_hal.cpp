@@ -43,6 +43,13 @@ void Si4432Hal::write_reg_(uint8_t reg, uint8_t val) {
   this->disable();
 }
 
+void Si4432Hal::read_burst_(uint8_t reg, uint8_t *data, size_t len) {
+  this->enable();
+  this->write_byte(reg & 0x7F);
+  this->read_array(data, len);
+  this->disable();
+}
+
 void Si4432Hal::write_burst_(uint8_t reg, const uint8_t *data, size_t len) {
   this->enable();
   this->write_byte(reg | SPI_WRITE);
@@ -163,7 +170,7 @@ bool Si4432Hal::init() {
   // Packet handler: no header, fixed length, no CRC (the frame has its own).
   this->write_reg_(REG_HEADER_CTL1, 0x00);
   this->write_reg_(REG_PREAMBLE_DET, 5 << 3);  // 20-bit preamble detect, as advised with AFC on
-  this->write_reg_(REG_RX_FIFO_CTL, 48);
+  this->write_reg_(REG_RX_FIFO_CTL, RX_AFULL_THRESHOLD);
 
   this->set_carrier_(static_cast<int64_t>(this->rf_freq_hz_) + this->freq_corr_hz_);
   this->write_reg_(REG_OP_MODE1, OP1_XTON);
@@ -191,7 +198,8 @@ void Si4432Hal::dump_config() {
   if (2 * this->rx_dev_hz_ > 32 * BIT_RATE_BPS) {
     ESP_LOGCONFIG(TAG, "    NOTE: h > 32 is outside the datasheet's specified demodulator range");
   }
-  ESP_LOGCONFIG(TAG, "    FIFO over/underflows: %" PRIu32, this->fifo_errors_);
+  ESP_LOGCONFIG(TAG, "    FIFO over/underflows: %" PRIu32 ", RX almost-full burst at %u bytes", this->fifo_errors_,
+                RX_AFULL_THRESHOLD);
 }
 
 // ---------------------------------------------------------------- TX
@@ -248,18 +256,19 @@ bool Si4432Hal::begin_rx(int /*cmt_off_codes*/) {
   this->write_reg_(REG_PKT_LEN, RX_FIXED_LEN);
   this->write_reg_(REG_OP_MODE2, OP2_FFCLRRX);
   this->write_reg_(REG_OP_MODE2, 0x00);
-  this->write_reg_(REG_INT_ENABLE1, INT1_FFERR | INT1_PKVALID);
+  this->write_reg_(REG_INT_ENABLE1, INT1_FFERR | INT1_RXFFAFULL | INT1_PKVALID);
   this->write_reg_(REG_INT_ENABLE2, INT2_SWDET);
   this->clear_irq_();
   this->sync_seen_ = false;
   this->sync_rssi_dbm_ = -128;
+  this->last_drain_ms_ = 0;
   this->write_reg_(REG_OP_MODE1, OP1_RXON | OP1_XTON);
   return true;
 }
 
-void Si4432Hal::service_irq_() {
+uint8_t Si4432Hal::service_irq_() {
   if (this->nirq_pin_ != nullptr && this->nirq_pin_->digital_read()) {
-    return;  // nothing pending
+    return 0;  // nothing pending
   }
   const uint8_t s1 = this->read_reg_(REG_INT_STATUS1);
   const uint8_t s2 = this->read_reg_(REG_INT_STATUS2);
@@ -272,13 +281,29 @@ void Si4432Hal::service_irq_() {
   }
   if (s1 & INT1_FFERR) {
     this->fifo_errors_++;
-    ESP_LOGW(TAG, "RX FIFO overflow - bytes lost (loop() not called often enough?)");
+    const uint8_t st = this->read_reg_(REG_DEVICE_STATUS);
+    const uint32_t gap = this->last_drain_ms_ != 0 ? millis() - this->last_drain_ms_ : 0;
+    ESP_LOGW(TAG, "RX FIFO error (status 0x%02X:%s%s), %" PRIu32 " ms since the previous drain", st,
+             (st & STATUS_FFOVFL) ? " overflow" : "", (st & STATUS_FFUNFL) ? " underflow" : "", gap);
   }
+  return s1;
 }
 
 size_t Si4432Hal::drain_rx(uint8_t *buf, size_t buf_size, uint8_t /*max_chunks*/) {
-  this->service_irq_();
+  const uint32_t now = millis();
+  if (this->sync_seen_ && this->last_drain_ms_ != 0 && now - this->last_drain_ms_ > this->max_drain_gap_ms_) {
+    this->max_drain_gap_ms_ = now - this->last_drain_ms_;
+  }
+  this->last_drain_ms_ = now;
+
+  const uint8_t s1 = this->service_irq_();
   size_t n = 0;
+  if ((s1 & INT1_RXFFAFULL) && buf_size >= RX_AFULL_THRESHOLD) {
+    // At least the threshold is waiting: one burst instead of 2 x 48 transactions.
+    this->read_burst_(REG_FIFO, buf, RX_AFULL_THRESHOLD);
+    for (; n < RX_AFULL_THRESHOLD; n++)
+      buf[n] = reverse8(buf[n]);
+  }
   // No byte counter on this chip: pop while "RX FIFO empty" is clear.
   while (n < buf_size && !(this->read_reg_(REG_DEVICE_STATUS) & STATUS_RXFFEM)) {
     buf[n++] = reverse8(this->read_reg_(REG_FIFO));
@@ -294,8 +319,9 @@ size_t Si4432Hal::drain_rx(uint8_t *buf, size_t buf_size, uint8_t /*max_chunks*/
 
 int8_t Si4432Hal::get_rssi_dbm() {
   if (this->sync_seen_) {
-    ESP_LOGD(TAG, "reply AFC correction %+.2f kHz",
-             this->sync_afc_raw_ * 0.15625f);
+    ESP_LOGD(TAG, "reply AFC correction %+.2f kHz, longest gap between FIFO reads %" PRIu32 " ms",
+             this->sync_afc_raw_ * 0.15625f, this->max_drain_gap_ms_);
+    this->max_drain_gap_ms_ = 0;
     return this->sync_rssi_dbm_;
   }
   return rssi_raw_to_dbm(this->read_reg_(REG_RSSI));

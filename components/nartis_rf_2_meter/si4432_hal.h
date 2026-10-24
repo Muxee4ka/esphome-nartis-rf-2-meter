@@ -19,7 +19,9 @@
  *
  *   nIRQ  Polled from loop(): when low, the interrupt status is read, which also
  *       latches RSSI and the AFC correction at sync-word detection - the only
- *       moment both describe the meter's signal rather than noise.
+ *       moment both describe the meter's signal rather than noise. RX almost-full
+ *       is enabled too: when it is set, RX_AFULL_THRESHOLD bytes are popped in one
+ *       SPI burst instead of two transactions per byte.
  *
  * Known limit: the datasheet specifies the FSK demodulator for modulation index
  * 0.5..32 (section 7.1.1). The meter's reply is h ~= 41 per the CMT profile, so
@@ -76,7 +78,8 @@ class Si4432Hal : public RadioHal,
   void write_burst_(uint8_t reg, const uint8_t *data, size_t len);
   void set_carrier_(int64_t hz);
   void clear_irq_();
-  void service_irq_();
+  uint8_t service_irq_();
+  void read_burst_(uint8_t reg, uint8_t *data, size_t len);
   bool wait_ready_(uint32_t timeout_ms);
 
   InternalGPIOPin *nirq_pin_{nullptr};
@@ -98,6 +101,10 @@ class Si4432Hal : public RadioHal,
   int8_t sync_rssi_dbm_{-128};
   int8_t sync_afc_raw_{0};
   uint32_t fifo_errors_{0};
+  // Gaps between drain_rx() calls while a frame is coming in: the FIFO holds
+  // 64 bytes = ~430 ms at 1.2 kbps, so a longer gap loses bytes.
+  uint32_t last_drain_ms_{0};
+  uint32_t max_drain_gap_ms_{0};
 };
 
 }  // namespace esphome::nartis_rf_2_meter

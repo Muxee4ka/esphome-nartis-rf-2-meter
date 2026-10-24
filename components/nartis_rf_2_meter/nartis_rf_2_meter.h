@@ -29,6 +29,7 @@
 #include "esphome/components/sensor/sensor.h"
 #include "esphome/components/text_sensor/text_sensor.h"
 #include "esphome/core/component.h"
+#include "esphome/core/helpers.h"
 #include "esphome/core/log.h"
 
 #include "cmt2300a_hal.h"
@@ -186,6 +187,9 @@ class NartisRf2MeterComponent : public esphome::PollingComponent {
   RadioHal *radio_{nullptr};
 
   bool listen_only_{false};
+  /// The receiver is serviced from loop(): run it back-to-back while RX is open
+  /// instead of every 16 ms, so a slow component elsewhere costs less of the FIFO.
+  HighFrequencyLoopRequester high_freq_;
   /// listen_only: a valid reply arrived since the last publish.
   bool listen_dirty_{false};
   uint32_t listen_frames_{0};

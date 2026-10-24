@@ -61,6 +61,7 @@ void NartisRf2MeterComponent::setup() {
     this->rx_len_ = 0;
     this->listen_armed_ms_ = millis();
     this->rx_last_chunk_ms_ = this->listen_armed_ms_;
+    this->high_freq_.start();
     this->set_state_(State::STATE_LISTEN);
     return;
   }
@@ -590,6 +591,7 @@ bool NartisRf2MeterComponent::send_request_() {
 
   this->rx_len_ = 0;
   this->rx_last_chunk_ms_ = App.get_loop_component_start_time();
+  this->high_freq_.start();
   return true;
 }
 
@@ -725,6 +727,7 @@ void NartisRf2MeterComponent::retry_or_finish_() {
 void NartisRf2MeterComponent::finish_exchange_() {
   this->radio_->go_standby();
   this->rx_len_ = 0;
+  this->high_freq_.stop();
 
   // Every step in the list is sent; nothing is conditional on what an earlier reply
   // held.
@@ -801,6 +804,7 @@ void NartisRf2MeterComponent::handle_listen_frame_(ParseResult r, const ParsedRe
     default:
       this->bad_frame_count_++;
       ESP_LOGD(TAG, "Listen: frame not usable: %s", parse_result_to_string(r));
+      ESP_LOGD(TAG, "  RX frame: %s", format_hex_pretty(this->rx_buf_.data(), this->rx_len_).c_str());
       return;
   }
 }
