@@ -7,10 +7,33 @@
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 namespace esphome::nartis_rf_2_meter {
 
 static const char *const TAG = "nartis_rf_2_meter";
+
+// ESPHome 2026.11 removed the std::string-returning format_hex_pretty(). This keeps
+// its old output ("AA.BB.CC (5)") so text sensors publish the same strings on any core.
+static std::string hex_dump(const uint8_t *data, size_t length) {
+  if (data == nullptr || length == 0) {
+    return "";
+  }
+  static const char *const DIGITS = "0123456789ABCDEF";
+  std::string ret;
+  ret.reserve(length * 3 + 8);
+  for (size_t i = 0; i < length; i++) {
+    if (i != 0) {
+      ret += '.';
+    }
+    ret += DIGITS[data[i] >> 4];
+    ret += DIGITS[data[i] & 0x0F];
+  }
+  if (length > 4) {
+    ret += " (" + std::to_string(length) + ")";
+  }
+  return ret;
+}
 
 void NartisRf2MeterComponent::setup() {
   if (this->radio_ == nullptr) {
@@ -85,9 +108,9 @@ void NartisRf2MeterComponent::handle_list_reply_(uint8_t request_idx, const Pars
   // Both blocks are built from the same device state, so they should agree.
   if (std::memcmp(this->status_block_, resp.status_block, STATUS_BLOCK_SIZE) != 0) {
     ESP_LOGW(TAG, "The two lists' status blocks differ: kept %s",
-             format_hex_pretty(this->status_block_, STATUS_BLOCK_SIZE).c_str());
+             hex_dump(this->status_block_, STATUS_BLOCK_SIZE).c_str());
     ESP_LOGW(TAG, "  DI 0x%04X sent %s", req.di,
-             format_hex_pretty(resp.status_block, STATUS_BLOCK_SIZE).c_str());
+             hex_dump(resp.status_block, STATUS_BLOCK_SIZE).c_str());
   }
 }
 
@@ -175,7 +198,7 @@ void NartisRf2MeterComponent::log_f101_() const {
   }
 
   ESP_LOGV(TAG, "  stat  %s",
-           format_hex_pretty(reinterpret_cast<const uint8_t *>(&b.status), sizeof(b.status)).c_str());
+           hex_dump(reinterpret_cast<const uint8_t *>(&b.status), sizeof(b.status)).c_str());
 }
 
 void NartisRf2MeterComponent::log_f102_() const {
@@ -312,7 +335,7 @@ void NartisRf2MeterComponent::dump_config() {
       ESP_LOGCONFIG(TAG, "  List %s %s DI 0x%04X: FAILED TO BUILD", list_id_to_string(req.list), half, req.di);
     } else {
       ESP_LOGCONFIG(TAG, "  List %s %s DI 0x%04X: %s", list_id_to_string(req.list), half, req.di,
-                    format_hex_pretty(frame.data(), n).c_str());
+                    hex_dump(frame.data(), n).c_str());
     }
   }
 
@@ -325,7 +348,7 @@ void NartisRf2MeterComponent::dump_config() {
     if (n == 0) {
       ESP_LOGCONFIG(TAG, "  Fixed block DI 0x%04X: FAILED TO BUILD", di);
     } else {
-      ESP_LOGCONFIG(TAG, "  Fixed block DI 0x%04X: %s", di, format_hex_pretty(frame.data(), n).c_str());
+      ESP_LOGCONFIG(TAG, "  Fixed block DI 0x%04X: %s", di, hex_dump(frame.data(), n).c_str());
     }
   }
 
@@ -335,8 +358,8 @@ void NartisRf2MeterComponent::dump_config() {
     const size_t n =
         build_read_request(pframe.data(), pframe.size(), this->serial_le_, probe.di, probe.body, probe.body_len);
     ESP_LOGCONFIG(TAG, "  Probe DI 0x%04X body %s -> %s", probe.di,
-                  format_hex_pretty(probe.body, probe.body_len).c_str(),
-                  (n == 0) ? "FAILED TO BUILD" : format_hex_pretty(pframe.data(), n).c_str());
+                  hex_dump(probe.body, probe.body_len).c_str(),
+                  (n == 0) ? "FAILED TO BUILD" : hex_dump(pframe.data(), n).c_str());
   }
 
   for (const auto &e : this->entries_) {
@@ -525,7 +548,7 @@ bool NartisRf2MeterComponent::send_request_() {
   ESP_LOGD(TAG, "TX DI 0x%04X%s attempt %u (%zu bytes)", di,
            (step.kind == StepKind::STEP_KIND_PROBE) ? LOG_STR_LITERAL(" (probe)") : LOG_STR_LITERAL(""),
            this->attempt_, this->tx_len_);
-  ESP_LOGV(TAG, "  TX frame: %s", format_hex_pretty(this->tx_buf_.data(), this->tx_len_).c_str());
+  ESP_LOGV(TAG, "  TX frame: %s", hex_dump(this->tx_buf_.data(), this->tx_len_).c_str());
 
   // transmit() is synchronous: it applies the TX profile, fills the FIFO and blocks
   // until TX_DONE - tens of milliseconds for a 28-byte frame at 1.2 kbps.
@@ -617,7 +640,7 @@ void NartisRf2MeterComponent::handle_wait_() {
     // The bytes go out whether or not they decode - they are the primary record for
     // working out an unfamiliar meter's indication set.
     ESP_LOGD(TAG, "RX rssi=%d dBm (%zu bytes)", this->last_rssi_dbm_, this->rx_len_);
-    ESP_LOGV(TAG, "  RX frame: %s", format_hex_pretty(this->rx_buf_.data(), this->rx_len_).c_str());
+    ESP_LOGV(TAG, "  RX frame: %s", hex_dump(this->rx_buf_.data(), this->rx_len_).c_str());
 
     ParsedResponse resp{};
     const ParseResult r = parse_response(this->rx_buf_.data(), this->rx_len_, this->serial_le_, &resp,
@@ -649,7 +672,7 @@ void NartisRf2MeterComponent::handle_wait_() {
       // heard us and declined, which is very different from silence.
       ESP_LOGI(TAG, "%sDI 0x%04X REFUSED: control 0x%02X, error payload: %s",
                is_probe ? LOG_STR_LITERAL("PROBE ") : LOG_STR_LITERAL(""), di, resp.control,
-               format_hex_pretty(resp.payload, resp.payload_len).c_str());
+               hex_dump(resp.payload, resp.payload_len).c_str());
       if (resp.payload_len == 1) {
         ESP_LOGI(TAG, "  error 0x%02X: %s", resp.payload[0], dlt645_error_hint(resp.payload[0]));
       }
@@ -684,7 +707,7 @@ void NartisRf2MeterComponent::handle_wait_() {
       ESP_LOGW(TAG, "DI 0x%04X: incomplete reply (%zu bytes) within %" PRIu32 " ms", di, this->rx_len_,
                this->rf_rx_timeout_ms_);
       // A truncated frame still says the meter answered, and often how far it got.
-      ESP_LOGV(TAG, "  RX partial: %s", format_hex_pretty(this->rx_buf_.data(), this->rx_len_).c_str());
+      ESP_LOGV(TAG, "  RX partial: %s", hex_dump(this->rx_buf_.data(), this->rx_len_).c_str());
     }
     this->retry_or_finish_();
   }
@@ -810,7 +833,7 @@ void NartisRf2MeterComponent::publish_cycle_outcome_(bool ok) {
 
 void NartisRf2MeterComponent::describe_item_(const ParsedItem &item, char *out, size_t cap,
                                              const uint8_t *width_overrides) {
-  const std::string hex = format_hex_pretty(item.raw, item.len);
+  const std::string hex = hex_dump(item.raw, item.len);
 
   char interp[48] = "";
   TagInfo info{};
@@ -877,7 +900,7 @@ void NartisRf2MeterComponent::log_items_(const ParsedResponse &resp, bool warn) 
 }
 
 void NartisRf2MeterComponent::log_response_(const ParsedResponse &resp) const {
-  ESP_LOGV(TAG, "  payload: %s", format_hex_pretty(resp.payload, resp.payload_len).c_str());
+  ESP_LOGV(TAG, "  payload: %s", hex_dump(resp.payload, resp.payload_len).c_str());
   if (resp.announced_count > resp.count) {
     // Normal: the meter announces its whole record set and sends what fits.
     ESP_LOGV(TAG, "  page holds %u of the %u record(s) the meter announced", resp.count, resp.announced_count);
@@ -892,7 +915,7 @@ void NartisRf2MeterComponent::log_unknown_tag_(uint16_t di, const ParsedResponse
            di, resp.unknown_tag, resp.unknown_offset);
   ESP_LOGW(TAG, "  rest of this response cannot be decoded. Your meter's indication set differs from the");
   ESP_LOGW(TAG, "  reference capture (it is configurable with the vendor tool).");
-  ESP_LOGW(TAG, "  payload: %s", format_hex_pretty(resp.payload, resp.payload_len).c_str());
+  ESP_LOGW(TAG, "  payload: %s", hex_dump(resp.payload, resp.payload_len).c_str());
 
   if (resp.count > 0) {
     ESP_LOGW(TAG, "  decoded %u item(s) before it:", resp.count);
@@ -904,7 +927,7 @@ void NartisRf2MeterComponent::log_unknown_tag_(uint16_t di, const ParsedResponse
   if (resp.unknown_offset < resp.payload_len) {
     const uint8_t tail_len = static_cast<uint8_t>(resp.payload_len - resp.unknown_offset);
     ESP_LOGW(TAG, "  undecoded tail from offset %u: %s", resp.unknown_offset,
-             format_hex_pretty(resp.payload + resp.unknown_offset, tail_len).c_str());
+             hex_dump(resp.payload + resp.unknown_offset, tail_len).c_str());
   }
   ESP_LOGW(TAG, "  Please report the lines above together with the parameters your display shows.");
 }
@@ -914,7 +937,7 @@ void NartisRf2MeterComponent::log_bad_records_(uint16_t di, ParseResult r, const
            parse_result_to_string(r));
   ESP_LOGW(TAG, "  address and length all good), so it is the record layout that is not understood.");
   ESP_LOGW(TAG, "  read as: %s", payload_shape_to_string(resp.shape));
-  ESP_LOGW(TAG, "  payload: %s", format_hex_pretty(resp.payload, resp.payload_len).c_str());
+  ESP_LOGW(TAG, "  payload: %s", hex_dump(resp.payload, resp.payload_len).c_str());
   if (resp.count > 0) {
     ESP_LOGW(TAG, "  decoded %u record(s) before the layout stopped adding up:", resp.count);
     this->log_items_(resp, true);
@@ -971,7 +994,7 @@ void NartisRf2MeterComponent::resolve_values_() {
       // so it is expected here. Anything else means the framing is off.
       if (info.enc != TagEnc::TAG_ENC_BCD_CLOCK) {
         ESP_LOGW(TAG, "TAG 0x%02X: %u byte(s) not valid for its encoding: %s", tag, item.len,
-                 format_hex_pretty(item.raw, item.len).c_str());
+                 hex_dump(item.raw, item.len).c_str());
       }
       continue;
     }
@@ -1053,7 +1076,7 @@ void NartisRf2MeterComponent::publish_from_data_(const SensorEntry &e) {
       ESP_LOGD(TAG, "  -> '%s' = %s", e.text_sensor->get_name().c_str(), buf);
     } else {
       ESP_LOGW(TAG, "TAG 0x%02X: clock is not valid BCD: %s", e.tag,
-               format_hex_pretty(item->raw, item->len).c_str());
+               hex_dump(item->raw, item->len).c_str());
     }
     return;
   }
@@ -1073,7 +1096,7 @@ void NartisRf2MeterComponent::publish_from_data_(const SensorEntry &e) {
     ESP_LOGD(TAG, "TAG 0x%02X: no configured source carried it", e.tag);
     return;
   }
-  const std::string hex = format_hex_pretty(item->raw, item->len);
+  const std::string hex = hex_dump(item->raw, item->len);
   e.text_sensor->publish_state(hex);
   ESP_LOGD(TAG, "  -> '%s' = %s", e.text_sensor->get_name().c_str(), hex.c_str());
 }
@@ -1085,7 +1108,7 @@ void NartisRf2MeterComponent::publish_from_status_(const SensorEntry &e) {
 
   if (e.status == StatusField::STATUS_FIELD_RAW) {
     if (e.text_sensor != nullptr) {
-      const std::string hex = format_hex_pretty(this->status_block_, STATUS_BLOCK_SIZE);
+      const std::string hex = hex_dump(this->status_block_, STATUS_BLOCK_SIZE);
       e.text_sensor->publish_state(hex);
       ESP_LOGD(TAG, "  -> '%s' = %s", e.text_sensor->get_name().c_str(), hex.c_str());
     } else {
