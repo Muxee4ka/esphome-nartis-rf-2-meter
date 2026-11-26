@@ -24,6 +24,24 @@ ESP32 с приёмопередатчиком эмулирует выносно�
 > **Компонент экспериментальный** 🙈 Проверен на живых счётчиках, но на отдельных
 > моделях и годах выпуска могут быть несостыковки. Обратная связь приветствуется.
 
+> **Этот репозиторий — форк [latonita/esphome-nartis-rf-2-meter](https://github.com/latonita/esphome-nartis-rf-2-meter)**
+> с готовой проверенной сборкой **ESP32 DevKit V1 + CC1101** для трёхфазного счётчика
+> и фиксом сборки под ESPHome 2026.11+.
+>
+> 👉 **[Пошаговая инструкция: что купить, распиновка, прошивка, дашборд, корпус](docs/esp32-cc1101-setup.md)**
+>
+> | | |
+> | --- | --- |
+> | Конфиг ESPHome | [`examples/esp32-cc1101-3ph.yaml`](examples/esp32-cc1101-3ph.yaml) |
+> | Дашборд Home Assistant | [`dashboards/nartis-meter-3ph.yaml`](dashboards/nartis-meter-3ph.yaml) |
+> | Корпус под 3D-печать | [`enclosure/esp32-cc1101/`](enclosure/esp32-cc1101/) |
+>
+> ```yaml
+> external_components:
+>   - source: github://Muxee4ka/esphome-nartis-rf-2-meter@main
+>     components: [nartis_rf_2_meter]
+> ```
+
 # Радиомодуль — блок `radio:`
 
 Радиочасть выбирается в YAML. Сам протокол от чипа не зависит: 2-FSK, 1200 бод,

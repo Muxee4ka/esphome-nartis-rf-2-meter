@@ -1,0 +1,191 @@
+# Трёхфазный счётчик Нартис (RF433-2) <- ESP32 DevKit V1 + CC1101.
+# Проверенная конфигурация: работает на живом счётчике с ноября 2026.
+# Пошаговая инструкция (распиновка, прошивка, дашборд): docs/esp32-cc1101-setup.md
+#
+# Распиновка (ESP32 DevKit V1, 30 pin):
+#   CC1101   VCC  GND  SCK     MISO(GDO1)  MOSI    CSN    GDO0    GDO2
+#   ESP32    3V3  GND  GPIO18  GPIO19      GPIO23  GPIO5  GPIO27  -
+#
+# Секреты — в secrets.yaml рядом (образец: examples/secrets.yaml.example).
+esphome:
+  name: nartis-meter
+  friendly_name: Nartis Meter   # от него HA строит entity_id: sensor.nartis_meter_*
+
+esp32:
+  board: esp32doit-devkit-v1
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+  tx_buffer_size: 1024          # длинные строки разбора кадров иначе обрезаются
+
+api:
+  encryption:
+    key: !secret nartis_api_key
+
+ota:
+  - platform: esphome
+    password: !secret nartis_ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  # Если у платы статический адрес / резерв DHCP — укажите его, OTA пойдёт сразу туда:
+  # use_address: 192.168.1.50
+  ap:
+    ssid: "Nartis-Meter-Fallback"
+    password: !secret nartis_fallback_ap
+
+captive_portal:
+
+external_components:
+  - source: github://Muxee4ka/esphome-nartis-rf-2-meter@main
+    components: [nartis_rf_2_meter]
+
+nartis_rf_2_meter:
+  id: nartis
+  address: !secret nartis_serial  # 12 цифр с шильдика, в кавычках: "0232XXXXXXXX"
+
+  radio:
+    type: cc1101
+    pin_sclk: GPIO18
+    pin_miso: GPIO19
+    pin_mosi: GPIO23
+    pin_cs: GPIO5
+    pin_gdo0: GPIO27            # необязателен, но с ним драйвер не опрашивает SPI впустую
+    # Ручки на случай проблем — по умолчанию не нужны:
+    # rx_offset: 0Hz            # со знаком; сдвинуть на сотни Гц, если счётчик не отвечает
+    # foc_carrier_sense_gate: true  # если счётчик СЛЫШНО (RSSI есть), а CRC не сходится
+
+  update_interval: 60s
+  # Трёхфазный счётчик: list_2 даёт энергию, U по фазам (0x15-0x17), P сумму,
+  # частоту и часы; fix_2 (DI 0xF102) добавляет токи и P по фазам.
+  # Однофазный — см. раздел «Однофазный счётчик» в docs/esp32-cc1101-setup.md.
+  sources: [list_2, fix_2]
+
+  rssi:
+    name: "Meter RSSI"
+
+sensor:
+  # --- Энергия (list_2) ------------------------------------------------------
+  - platform: nartis_rf_2_meter
+    name: "Energy import total"
+    tag: 0x00
+    unit_of_measurement: kWh
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+  - platform: nartis_rf_2_meter
+    name: "Energy import T1"
+    tag: 0x01
+    unit_of_measurement: kWh
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+  - platform: nartis_rf_2_meter
+    name: "Energy import T2"
+    tag: 0x02
+    unit_of_measurement: kWh
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+
+  # --- Мощность: сумма (list_2) и по фазам (fix_2) -----------------------------
+  - platform: nartis_rf_2_meter
+    name: "Active power"
+    tag: 0x20
+    unit_of_measurement: W
+    accuracy_decimals: 0
+    device_class: power
+    state_class: measurement
+  - platform: nartis_rf_2_meter
+    name: "Active power L1"
+    tag: 0x21
+    unit_of_measurement: W
+    accuracy_decimals: 0
+    device_class: power
+    state_class: measurement
+  - platform: nartis_rf_2_meter
+    name: "Active power L2"
+    tag: 0x22
+    unit_of_measurement: W
+    accuracy_decimals: 0
+    device_class: power
+    state_class: measurement
+  - platform: nartis_rf_2_meter
+    name: "Active power L3"
+    tag: 0x23
+    unit_of_measurement: W
+    accuracy_decimals: 0
+    device_class: power
+    state_class: measurement
+
+  # --- Напряжение фаз (list_2). На трёхфазном счётчике 0x14 НЕ приходит. -------
+  - platform: nartis_rf_2_meter
+    name: "Voltage L1"
+    tag: 0x15
+    unit_of_measurement: V
+    accuracy_decimals: 1
+    device_class: voltage
+    state_class: measurement
+  - platform: nartis_rf_2_meter
+    name: "Voltage L2"
+    tag: 0x16
+    unit_of_measurement: V
+    accuracy_decimals: 1
+    device_class: voltage
+    state_class: measurement
+  - platform: nartis_rf_2_meter
+    name: "Voltage L3"
+    tag: 0x17
+    unit_of_measurement: V
+    accuracy_decimals: 1
+    device_class: voltage
+    state_class: measurement
+
+  # --- Ток фаз (fix_2). 0x1C-0x1E, а не 0x1B: подписи производителя сдвинуты, см. tags.md
+  - platform: nartis_rf_2_meter
+    name: "Current L1"
+    tag: 0x1C
+    unit_of_measurement: A
+    accuracy_decimals: 2
+    device_class: current
+    state_class: measurement
+  - platform: nartis_rf_2_meter
+    name: "Current L2"
+    tag: 0x1D
+    unit_of_measurement: A
+    accuracy_decimals: 2
+    device_class: current
+    state_class: measurement
+  - platform: nartis_rf_2_meter
+    name: "Current L3"
+    tag: 0x1E
+    unit_of_measurement: A
+    accuracy_decimals: 2
+    device_class: current
+    state_class: measurement
+
+  - platform: nartis_rf_2_meter
+    name: "Mains frequency"
+    tag: 0x28
+    unit_of_measurement: Hz
+    accuracy_decimals: 2
+    device_class: frequency
+    state_class: measurement
+
+  - platform: wifi_signal
+    name: "WiFi signal"
+    update_interval: 60s
+    entity_category: diagnostic
+
+text_sensor:
+  - platform: nartis_rf_2_meter
+    name: "Meter clock"
+    tag: 0x29
+    entity_category: diagnostic
+
+binary_sensor:
+  - platform: nartis_rf_2_meter
+    name: "Last read OK"

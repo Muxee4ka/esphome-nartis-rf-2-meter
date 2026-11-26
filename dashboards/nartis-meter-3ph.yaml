@@ -1,0 +1,142 @@
+# Дашборд Home Assistant для трёхфазного Нартис (examples/esp32-cc1101-3ph.yaml).
+#
+# Как поставить целиком:
+#   Настройки -> Панели -> «Добавить панель» -> «Новая панель с нуля» -> открыть её ->
+#   карандаш -> ⋮ -> «Редактор YAML» (Raw configuration editor) -> вставить этот файл.
+# Как взять отдельную карточку: на любой панели «Добавить карточку» -> «Ручная» (Manual)
+#   -> вставить один элемент из cards: (вместе с вложенными).
+#
+# entity_id здесь — для `friendly_name: Nartis Meter`. Если назвали устройство иначе,
+# замените префикс `nartis_meter_` поиском-заменой.
+title: Электросчётчик
+views:
+  - title: Счётчик
+    path: meter
+    icon: mdi:meter-electric
+    type: sections
+    max_columns: 3
+    sections:
+      # --- Сейчас ---------------------------------------------------------------
+      - type: grid
+        cards:
+          - type: heading
+            heading: Сейчас
+            icon: mdi:transmission-tower
+          - type: tile
+            entity: sensor.nartis_meter_active_power
+            name: Мощность, всего
+            grid_options: { columns: 12 }
+          # Зелёный — 207…253 В (230 В ±10 %, ГОСТ 32144-2013).
+          - type: gauge
+            entity: sensor.nartis_meter_voltage_l1
+            name: L1
+            min: 140
+            max: 260
+            needle: true
+            segments:
+              - { from: 0, color: "#db4437" }
+              - { from: 198, color: "#ffa600" }
+              - { from: 207, color: "#43a047" }
+              - { from: 253, color: "#db4437" }
+            grid_options: { columns: 4 }
+          - type: gauge
+            entity: sensor.nartis_meter_voltage_l2
+            name: L2
+            min: 140
+            max: 260
+            needle: true
+            segments:
+              - { from: 0, color: "#db4437" }
+              - { from: 198, color: "#ffa600" }
+              - { from: 207, color: "#43a047" }
+              - { from: 253, color: "#db4437" }
+            grid_options: { columns: 4 }
+          - type: gauge
+            entity: sensor.nartis_meter_voltage_l3
+            name: L3
+            min: 140
+            max: 260
+            needle: true
+            segments:
+              - { from: 0, color: "#db4437" }
+              - { from: 198, color: "#ffa600" }
+              - { from: 207, color: "#43a047" }
+              - { from: 253, color: "#db4437" }
+            grid_options: { columns: 4 }
+          - type: glance
+            title: Фазы
+            columns: 3
+            show_icon: false
+            state_color: false
+            grid_options: { columns: 12 }
+            entities:
+              - { entity: sensor.nartis_meter_voltage_l1, name: U L1 }
+              - { entity: sensor.nartis_meter_voltage_l2, name: U L2 }
+              - { entity: sensor.nartis_meter_voltage_l3, name: U L3 }
+              - { entity: sensor.nartis_meter_current_l1, name: I L1 }
+              - { entity: sensor.nartis_meter_current_l2, name: I L2 }
+              - { entity: sensor.nartis_meter_current_l3, name: I L3 }
+              - { entity: sensor.nartis_meter_active_power_l1, name: P L1 }
+              - { entity: sensor.nartis_meter_active_power_l2, name: P L2 }
+              - { entity: sensor.nartis_meter_active_power_l3, name: P L3 }
+
+      # --- Показания и связь ------------------------------------------------------
+      - type: grid
+        cards:
+          - type: heading
+            heading: Показания
+            icon: mdi:counter
+          - type: entities
+            grid_options: { columns: 12 }
+            entities:
+              - entity: sensor.nartis_meter_energy_import_total
+                name: Всего
+              - entity: sensor.nartis_meter_energy_import_t1
+                name: Тариф 1 (день)
+              - entity: sensor.nartis_meter_energy_import_t2
+                name: Тариф 2 (ночь)
+              - entity: sensor.nartis_meter_mains_frequency
+                name: Частота сети
+              - type: divider
+              - entity: binary_sensor.nartis_meter_last_read_ok
+                name: Счётчик читается
+              - entity: sensor.nartis_meter_meter_rssi
+                name: Сигнал счётчика (RF)
+              - entity: sensor.nartis_meter_wifi_signal
+                name: Wi-Fi считывателя
+              - entity: sensor.nartis_meter_meter_clock
+                name: Часы счётчика
+
+      # --- История -----------------------------------------------------------------
+      - type: grid
+        cards:
+          - type: heading
+            heading: История
+            icon: mdi:chart-line
+          - type: history-graph
+            title: Напряжение по фазам (сутки)
+            hours_to_show: 24
+            grid_options: { columns: 12 }
+            entities:
+              - { entity: sensor.nartis_meter_voltage_l1, name: L1 }
+              - { entity: sensor.nartis_meter_voltage_l2, name: L2 }
+              - { entity: sensor.nartis_meter_voltage_l3, name: L3 }
+          - type: history-graph
+            title: Мощность (сутки)
+            hours_to_show: 24
+            grid_options: { columns: 12 }
+            entities:
+              - { entity: sensor.nartis_meter_active_power, name: Всего }
+              - { entity: sensor.nartis_meter_active_power_l1, name: L1 }
+              - { entity: sensor.nartis_meter_active_power_l2, name: L2 }
+              - { entity: sensor.nartis_meter_active_power_l3, name: L3 }
+          - type: statistics-graph
+            title: Потребление по дням, кВт·ч
+            chart_type: bar
+            period: day
+            days_to_show: 30
+            stat_types: [change]
+            grid_options: { columns: 12 }
+            entities:
+              - { entity: sensor.nartis_meter_energy_import_t1, name: Тариф 1 }
+              - { entity: sensor.nartis_meter_energy_import_t2, name: Тариф 2 }
